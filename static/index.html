@@ -77,28 +77,60 @@ function setBar(p){ bar.style.width = (Math.max(0, Math.min(100, p)) || 0) + '%'
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 async function poll(taskId){
-  const r = await fetch(`/tasks/${taskId}`);
-  if(!r.ok){ setErr(`HTTP ${r.status}`); return; }
-  const t = await r.json();
+  try{
+    const r = await fetch(`/tasks/${taskId}`, { cache: 'no-store' });
+    if(!r.ok){ setErr(`HTTP ${r.status}`); return; }
+    const t = await r.json();
 
-  // texto + ETL
-  let line = `Fila: ${t.state}`;
-  if (typeof t.progress === 'number') line += ` • ${t.progress}%`;
-  if (t.eta_seconds != null) line += ` • ETL: ~${Math.max(0, t.eta_seconds)}s`;
-  if (t.message) line += ` • ${t.message}`;
-  setInfo(line);
-  setBar(t.progress || 0);
+    let line = `Status: ${t.state}`;
+    if (typeof t.progress === 'number') line += ` • ${t.progress}%`;
+    if (t.eta_seconds != null) line += ` • ETA: ~${Math.max(0, t.eta_seconds)}s`;
+    if (t.message) line += ` • ${t.message}`;
+    setInfo(line);
+    setBar(t.progress || 0);
 
-  if (t.state === 'error'){ setErr(t.message||'Falha'); return; }
-  if (t.state === 'done'){
-    chip.style.display='none';
-    const url = t.download_url || `/download/${taskId}`;
-    stat.innerHTML = `<span class="ok">Pronto!</span> <a class="dl" href="${url}">Baixar site.zip</a>`;
-    setBar(100);
-    return;
+    if (t.state === 'error'){ setErr(t.message||'Falha'); return; }
+    if (t.state === 'done'){
+      chip.style.display='none';
+      const url = t.download_url || `/download/${taskId}`;
+      stat.innerHTML = `<span class="ok">Pronto!</span> <a class="dl" href="${url}">Baixar site.zip</a>`;
+      setBar(100);
+      return;
+    }
+    setTimeout(()=>poll(taskId), 1200);
+  }catch(e){
+    setErr(e.message||e);
   }
-  // continua polling
-  setTimeout(()=>poll(taskId), 1500);
+}
+
+function uploadWithProgress(fd){
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/tasks');
+
+    // progresso do upload (0–30%)
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 30);
+        setInfo(`Enviando... ${pct}%`);
+        setBar(pct);
+      } else {
+        setInfo('Enviando...');
+        setBar(15);
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch(err){ reject(err); }
+      } else {
+        reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Falha de rede no upload'));
+    xhr.send(fd);
+  });
 }
 
 go.onclick = async () => {
@@ -117,14 +149,9 @@ go.onclick = async () => {
 
   go.disabled = true;
   try{
-    const r = await fetch('/tasks', { method:'POST', body: fd });
-    if(!r.ok){
-      const tx = await r.text();
-      throw new Error(`HTTP ${r.status}: ${tx}`);
-    }
-    const {task_id} = await r.json();
+    const { task_id } = await uploadWithProgress(fd);  // 0→30%
     setInfo('Enfileirado. Aguardando processamento...');
-    poll(task_id);
+    poll(task_id);                                     // 30→100%
   }catch(e){
     setErr(e.message||e);
   }finally{
