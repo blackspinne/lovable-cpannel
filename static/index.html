@@ -23,8 +23,7 @@
     .status{display:flex;justify-content:space-between;font-size:13px;margin:8px 2px 0}
     .status span{color:var(--muted)}
     .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#1e3a8a;font-size:12px;margin-left:8px}
-    .ok{color:var(--ok)}
-    .err{color:var(--err)}
+    .ok{color:var(--ok)} .err{color:var(--err)}
     .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
@@ -50,6 +49,7 @@
           <div class="status">
             <strong id="statusLabel">Aguardando…</strong>
             <span>
+              <span id="queueInfo">Fila: —</span> •
               <span id="percent">0%</span> •
               <span id="eta">ETL: —</span>
             </span>
@@ -72,26 +72,14 @@
     const etaEl = document.getElementById('eta');
     const statusLabel = document.getElementById('statusLabel');
     const detail = document.getElementById('detail');
+    const queueInfo = document.getElementById('queueInfo');
 
     const setPhase = (txt) => phaseEl.textContent = txt;
     const setStatus = (txt) => statusLabel.textContent = txt;
     const setDetail = (txt) => detail.textContent = txt || '';
-    const setPct = (p) => { bar.style.width = p + '%'; percentEl.textContent = p.toFixed(0) + '%'; };
-
-    // heurística de ETL simples
-    let startTs = 0;
-    let lastPct = 0;
-    function updateETA(pct){
-      if (pct <= 0) { etaEl.textContent = 'ETL: —'; return; }
-      const elapsed = (Date.now() - startTs) / 1000;
-      const rate = pct / elapsed; // % por segundo
-      const remain = Math.max(0, (100 - pct) / (rate || 0.0001));
-      const fmt = s => {
-        if (s > 90) return Math.round(s/60) + ' min';
-        return Math.round(s) + ' s';
-      };
-      etaEl.textContent = 'ETL: ' + fmt(remain);
-    }
+    const setPct = (p) => { bar.style.width = p + '%'; percentEl.textContent = Math.round(p) + '%'; };
+    const setQueue = (n) => { queueInfo.textContent = `Fila: ${n === 0 ? 'processando' : n}`; };
+    const fmtETA = (s) => s > 90 ? `${Math.round(s/60)} min` : `${Math.round(s)} s`;
 
     function disableUI(disabled) {
       goBtn.disabled = disabled;
@@ -99,126 +87,96 @@
       document.getElementById('file').disabled = disabled;
     }
 
-    // Fases de 0-100:
-    // 0–30 upload, 30–90 processamento (fake progress), 90–100 download
-    function runFakeProcessingProgress() {
-      // avança devagar entre 30 e 85% enquanto o servidor processa
-      const tick = () => {
-        if (lastPct < 85) {
-          lastPct += 0.5; setPct(lastPct); updateETA(lastPct);
-          setDetail('Processando no servidor… isso pode levar alguns minutos na primeira vez.');
-          setTimeout(tick, 400);
+    async function pollStatus(id, slug) {
+      setPhase('aguardando');
+      setStatus('Aguardando na fila…');
+      setDetail('');
+
+      let timer = null;
+      const tick = async () => {
+        try {
+          const r = await fetch(`/tasks/${id}/status`);
+          if (!r.ok) throw new Error('Erro no status');
+          const st = await r.json(); // {status, position, progress, message, eta_seconds}
+
+          // posição na fila (0 = processando)
+          setQueue(st.position);
+
+          if (st.status === 'queued') {
+            setPhase('aguardando');
+            setStatus('Aguardando na fila…');
+            setPct(0);
+            etaEl.textContent = 'ETL: ' + fmtETA(st.eta_seconds || 0);
+          }
+          else if (st.status === 'running') {
+            setPhase('processando');
+            setStatus(st.message || 'Processando…');
+            setPct(Math.max(1, st.progress || 0));
+            etaEl.textContent = 'ETL: ' + fmtETA(st.eta_seconds || 0);
+          }
+          else if (st.status === 'done') {
+            setPhase('baixando');
+            setStatus('Concluído ✓ Baixando…');
+            setPct(100); etaEl.textContent = 'ETL: 0 s';
+            clearInterval(timer);
+
+            // baixa o zip
+            const resp = await fetch(`/tasks/${id}/download`);
+            if (!resp.ok) throw new Error('Falha ao baixar');
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `${slug}-site.zip`;
+            document.body.appendChild(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+
+            disableUI(false);
+            return;
+          }
+          else if (st.status === 'error') {
+            clearInterval(timer);
+            setPhase('erro'); setStatus('Erro'); setDetail('Tente novamente. Se persistir, fale comigo.');
+            disableUI(false);
+            return;
+          }
+        } catch (e) {
+          clearInterval(timer);
+          setPhase('erro'); setStatus('Erro ao consultar status'); setDetail(String(e));
+          disableUI(false);
         }
       };
-      tick();
+
+      await tick();
+      timer = setInterval(tick, 1500);
     }
 
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
 
       const slug = document.getElementById('slug').value.trim();
       const file = document.getElementById('file').files[0];
       if (!slug) { alert('Informe a slug'); return; }
       if (!file) { alert('Selecione o ZIP do Lovable'); return; }
+      if (!/^[a-z0-9][a-z0-9/_-]*$/.test(slug)) { alert('Slug inválida.'); return; }
 
-      // valida slug simples
-      if (!/^[a-z0-9][a-z0-9/_-]*$/.test(slug)) {
-        alert('Slug inválida. Use somente letras/números, traço ou underline.'); return;
-      }
+      disableUI(true);
+      setPhase('enviando'); setStatus('Enfileirando…'); setPct(0); setDetail('Preparando tarefa…'); etaEl.textContent = 'ETL: —'; setQueue('—');
 
       const fd = new FormData();
       fd.append('slug', slug);
       fd.append('file', file, file.name);
 
-      // UI
-      disableUI(true);
-      setPhase('enviando');
-      setStatus('Enviando arquivo…');
-      setDetail('');
-      setPct(0);
-      startTs = Date.now();
-      lastPct = 0;
-
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/build');
-      xhr.responseType = 'blob';
-
-      // progresso de upload
-      xhr.upload.onprogress = (ev) => {
-        if (ev.lengthComputable) {
-          const upPct = Math.min(30, (ev.loaded / ev.total) * 30);
-          lastPct = upPct;
-          setPct(upPct);
-          updateETA(upPct);
-          setStatus('Enviando arquivo…');
-          setDetail(`${(ev.loaded/1024/1024).toFixed(1)} MB de ${(ev.total/1024/1024).toFixed(1)} MB`);
-        } else {
-          setStatus('Enviando arquivo…');
-        }
-      };
-
-      // quando começa a receber resposta, significa que o servidor terminou o processamento
-      xhr.onprogress = (ev) => {
-        // download do zip: 90–100%
-        setPhase('baixando');
-        setStatus('Baixando site.zip…');
-        let dlPct = 90;
-        if (ev.lengthComputable) {
-          const frac = ev.loaded / ev.total;
-          dlPct = 90 + Math.max(0, Math.min(10, frac * 10));
-        } else {
-          // se não computável, aproxima
-          dlPct = Math.max(90, lastPct);
-        }
-        lastPct = dlPct;
-        setPct(dlPct);
-        updateETA(dlPct);
-      };
-
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 2) { // headers recebidos
-          // servidor já está processando → inicia a barra fake
-          setPhase('processando');
-          setStatus('Processando…');
-          runFakeProcessingProgress();
-        }
-      };
-
-      xhr.onerror = () => {
+      try {
+        const r = await fetch('/tasks', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json(); // {id, position, eta_seconds}
+        setQueue(data.position ?? '—');
+        setPhase('aguardando'); setStatus('Aguardando na fila…');
+        pollStatus(data.id, slug);
+      } catch (err) {
+        setPhase('erro'); setStatus('Erro ao enfileirar'); setDetail(String(err));
         disableUI(false);
-        setPhase('erro'); setStatus('Falha de rede.'); setDetail('Verifique sua conexão e tente novamente.');
-      };
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          // sucesso → baixa o blob
-          setPct(100); updateETA(100);
-          setPhase('concluído'); setStatus('Concluído ✓'); setDetail('');
-
-          const blob = xhr.response;
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${slug}-site.zip`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-        } else {
-          // tenta ler mensagem de erro de texto
-          const reader = new FileReader();
-          reader.onload = () => {
-            disableUI(false);
-            setPhase('erro');
-            setStatus('Erro ao processar');
-            setDetail(reader.result || `HTTP ${xhr.status}`);
-          };
-          reader.readAsText(xhr.response || new Blob());
-        }
-        disableUI(false);
-      };
-
-      xhr.send(fd);
+      }
     });
   </script>
 </body>
