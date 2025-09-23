@@ -1,43 +1,224 @@
 <!doctype html>
-<html lang="pt-br">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Lovable → cPanel (Slug)</title>
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:2rem;max-width:820px}
-    .card{padding:1.5rem;border:1px solid #ddd;border-radius:12px;box-shadow:0 1px 8px rgba(0,0,0,.05)}
-    label{display:block;margin:.75rem 0 .25rem;color:#333}
-    input[type="text"],input[type="file"]{width:100%;padding:.55rem;border:1px solid #ccc;border-radius:8px}
-    button{padding:.6rem 1rem;border:0;border-radius:10px;cursor:pointer}
-    small{color:#666}
+    :root { --fg:#111; --muted:#666; --bg:#fff; --primary:#2563eb; --ok:#16a34a; --err:#b91c1c; }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
+    .wrap{max-width:900px;margin:48px auto;padding:0 20px}
+    h1{font-size:40px;margin:0 0 8px}
+    p.lead{color:var(--muted);margin:0 0 24px}
+    .card{border:1px solid #e5e7eb;border-radius:12px;padding:24px}
+    label{display:block;font-weight:600;margin:16px 0 8px}
+    input[type="text"], input[type="file"]{width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d1d5db;border-radius:10px;font-size:16px}
+    button{appearance:none;border:0;background:var(--primary);color:#fff;padding:12px 18px;border-radius:10px;font-weight:600;cursor:pointer}
+    button[disabled]{opacity:.6;cursor:not-allowed}
+    .row{display:flex;gap:12px;align-items:center;margin-top:16px}
+    .hint{color:var(--muted);font-size:14px;margin-top:16px}
+    .progress-wrap{margin-top:18px}
+    .bar{height:10px;background:#e5e7eb;border-radius:999px;overflow:hidden}
+    .bar > span{display:block;height:100%;width:0%;background:var(--primary);transition:width .15s ease}
+    .status{display:flex;justify-content:space-between;font-size:13px;margin:8px 2px 0}
+    .status span{color:var(--muted)}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#1e3a8a;font-size:12px;margin-left:8px}
+    .ok{color:var(--ok)}
+    .err{color:var(--err)}
+    .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
 <body>
-  <h1>Lovable → cPanel (Slug)</h1>
-  <p>Envie o ZIP do Lovable e informe a slug. Vamos te devolver um <b>site.zip</b> pronto para subir no cPanel.</p>
-  <div class="card">
-    <form id="f" method="post" action="/build" enctype="multipart/form-data">
-      <label>Slug (ex.: bancario)</label>
-      <input name="slug" type="text" required pattern="[a-z0-9][a-z0-9/_-]*" placeholder="bancario" />
-      <label>ZIP do Lovable</label>
-      <input name="file" type="file" accept=".zip" required />
-      <p><button type="submit">Gerar site.zip</button></p>
-      <small>Dica: depois extraia o site.zip em <code>/public_html/&lt;slug&gt;/</code> no cPanel.</small>
-    </form>
+  <div class="wrap">
+    <h1>Lovable → cPanel (Slug)</h1>
+    <p class="lead">Envie o ZIP do Lovable e informe a slug. Vamos devolver um <b>site.zip</b> pronto para subir no cPanel.</p>
+
+    <div class="card">
+      <form id="form">
+        <label for="slug">Slug (ex.: bancario)</label>
+        <input id="slug" name="slug" type="text" placeholder="bancario" required />
+
+        <label for="file">ZIP do Lovable</label>
+        <input id="file" name="file" type="file" accept=".zip" required />
+
+        <div class="row">
+          <button id="go" type="submit">Gerar site.zip</button>
+          <span id="phase" class="pill">pronto</span>
+        </div>
+
+        <div class="progress-wrap" aria-live="polite">
+          <div class="status">
+            <strong id="statusLabel">Aguardando…</strong>
+            <span>
+              <span id="percent">0%</span> •
+              <span id="eta">ETL: —</span>
+            </span>
+          </div>
+          <div class="bar"><span id="bar"></span></div>
+          <div class="small" id="detail"></div>
+        </div>
+
+        <p class="hint">Dica: depois extraia o <code>site.zip</code> em <code>/public_html/&lt;slug&gt;/</code> no cPanel.</p>
+      </form>
+    </div>
   </div>
+
   <script>
-    const f=document.getElementById('f');
-    f.addEventListener('submit', async (e)=>{
+    const form = document.getElementById('form');
+    const goBtn = document.getElementById('go');
+    const phaseEl = document.getElementById('phase');
+    const bar = document.getElementById('bar');
+    const percentEl = document.getElementById('percent');
+    const etaEl = document.getElementById('eta');
+    const statusLabel = document.getElementById('statusLabel');
+    const detail = document.getElementById('detail');
+
+    const setPhase = (txt) => phaseEl.textContent = txt;
+    const setStatus = (txt) => statusLabel.textContent = txt;
+    const setDetail = (txt) => detail.textContent = txt || '';
+    const setPct = (p) => { bar.style.width = p + '%'; percentEl.textContent = p.toFixed(0) + '%'; };
+
+    // heurística de ETL simples
+    let startTs = 0;
+    let lastPct = 0;
+    function updateETA(pct){
+      if (pct <= 0) { etaEl.textContent = 'ETL: —'; return; }
+      const elapsed = (Date.now() - startTs) / 1000;
+      const rate = pct / elapsed; // % por segundo
+      const remain = Math.max(0, (100 - pct) / (rate || 0.0001));
+      const fmt = s => {
+        if (s > 90) return Math.round(s/60) + ' min';
+        return Math.round(s) + ' s';
+      };
+      etaEl.textContent = 'ETL: ' + fmt(remain);
+    }
+
+    function disableUI(disabled) {
+      goBtn.disabled = disabled;
+      document.getElementById('slug').disabled = disabled;
+      document.getElementById('file').disabled = disabled;
+    }
+
+    // Fases de 0-100:
+    // 0–30 upload, 30–90 processamento (fake progress), 90–100 download
+    function runFakeProcessingProgress() {
+      // avança devagar entre 30 e 85% enquanto o servidor processa
+      const tick = () => {
+        if (lastPct < 85) {
+          lastPct += 0.5; setPct(lastPct); updateETA(lastPct);
+          setDetail('Processando no servidor… isso pode levar alguns minutos na primeira vez.');
+          setTimeout(tick, 400);
+        }
+      };
+      tick();
+    }
+
+    form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const form = new FormData(f);
-      const resp = await fetch('/build', {method:'POST', body:form});
-      if(!resp.ok){ alert('Erro: ' + await resp.text()); return; }
-      const blob=await resp.blob();
-      const a=document.createElement('a');
-      a.href=URL.createObjectURL(blob);
-      a.download=(form.get('slug')||'site')+'-site.zip';
-      a.click(); URL.revokeObjectURL(a.href);
+
+      const slug = document.getElementById('slug').value.trim();
+      const file = document.getElementById('file').files[0];
+      if (!slug) { alert('Informe a slug'); return; }
+      if (!file) { alert('Selecione o ZIP do Lovable'); return; }
+
+      // valida slug simples
+      if (!/^[a-z0-9][a-z0-9/_-]*$/.test(slug)) {
+        alert('Slug inválida. Use somente letras/números, traço ou underline.'); return;
+      }
+
+      const fd = new FormData();
+      fd.append('slug', slug);
+      fd.append('file', file, file.name);
+
+      // UI
+      disableUI(true);
+      setPhase('enviando');
+      setStatus('Enviando arquivo…');
+      setDetail('');
+      setPct(0);
+      startTs = Date.now();
+      lastPct = 0;
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/build');
+      xhr.responseType = 'blob';
+
+      // progresso de upload
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+          const upPct = Math.min(30, (ev.loaded / ev.total) * 30);
+          lastPct = upPct;
+          setPct(upPct);
+          updateETA(upPct);
+          setStatus('Enviando arquivo…');
+          setDetail(`${(ev.loaded/1024/1024).toFixed(1)} MB de ${(ev.total/1024/1024).toFixed(1)} MB`);
+        } else {
+          setStatus('Enviando arquivo…');
+        }
+      };
+
+      // quando começa a receber resposta, significa que o servidor terminou o processamento
+      xhr.onprogress = (ev) => {
+        // download do zip: 90–100%
+        setPhase('baixando');
+        setStatus('Baixando site.zip…');
+        let dlPct = 90;
+        if (ev.lengthComputable) {
+          const frac = ev.loaded / ev.total;
+          dlPct = 90 + Math.max(0, Math.min(10, frac * 10));
+        } else {
+          // se não computável, aproxima
+          dlPct = Math.max(90, lastPct);
+        }
+        lastPct = dlPct;
+        setPct(dlPct);
+        updateETA(dlPct);
+      };
+
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 2) { // headers recebidos
+          // servidor já está processando → inicia a barra fake
+          setPhase('processando');
+          setStatus('Processando…');
+          runFakeProcessingProgress();
+        }
+      };
+
+      xhr.onerror = () => {
+        disableUI(false);
+        setPhase('erro'); setStatus('Falha de rede.'); setDetail('Verifique sua conexão e tente novamente.');
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          // sucesso → baixa o blob
+          setPct(100); updateETA(100);
+          setPhase('concluído'); setStatus('Concluído ✓'); setDetail('');
+
+          const blob = xhr.response;
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `${slug}-site.zip`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        } else {
+          // tenta ler mensagem de erro de texto
+          const reader = new FileReader();
+          reader.onload = () => {
+            disableUI(false);
+            setPhase('erro');
+            setStatus('Erro ao processar');
+            setDetail(reader.result || `HTTP ${xhr.status}`);
+          };
+          reader.readAsText(xhr.response || new Blob());
+        }
+        disableUI(false);
+      };
+
+      xhr.send(fd);
     });
   </script>
 </body>
