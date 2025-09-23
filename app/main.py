@@ -8,6 +8,7 @@ import json
 import zipfile
 import tempfile
 import subprocess
+import uuid
 from enum import Enum
 from collections import deque
 from typing import Optional, Dict, Deque, Callable
