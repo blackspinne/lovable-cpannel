@@ -1,148 +1,146 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-br">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8">
   <title>Lovable → cPanel (Slug)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    :root { --fg:#111; --muted:#666; --bg:#fff; --primary:#2563eb; --ok:#16a34a; --err:#b91c1c; }
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
-    .wrap{max-width:900px;margin:48px auto;padding:0 20px}
-    h1{font-size:40px;margin:0 0 8px}
-    p.lead{color:var(--muted);margin:0 0 24px}
-    .card{border:1px solid #e5e7eb;border-radius:12px;padding:24px}
-    label{display:block;font-weight:600;margin:16px 0 8px}
-    input[type="text"], input[type="file"]{width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d1d5db;border-radius:10px;font-size:16px}
-    button{appearance:none;border:0;background:var(--primary);color:#fff;padding:12px 18px;border-radius:10px;font-weight:600;cursor:pointer}
-    button[disabled]{opacity:.6;cursor:not-allowed}
-    .row{display:flex;gap:12px;align-items:center;margin-top:16px}
-    .hint{color:var(--muted);font-size:14px;margin-top:16px}
-    .progress-wrap{margin-top:18px}
-    .bar{height:10px;background:#e5e7eb;border-radius:999px;overflow:hidden}
-    .bar > span{display:block;height:100%;width:0%;background:var(--primary);transition:width .15s ease}
-    .status{display:flex;justify-content:space-between;font-size:13px;margin:8px 2px 0}
-    .status span{color:var(--muted)}
-    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#1e3a8a;font-size:12px;margin-left:8px}
-    .small{font-size:12px;color:var(--muted)}
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 32px; color: #111827; }
+    .card { max-width: 820px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px 28px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    h1 { font-size: 34px; margin: 0 0 8px; }
+    p.muted { color: #6b7280; margin-top: 4px; }
+    label { display:block; font-weight:600; margin:18px 0 6px; }
+    input[type="text"] { width:100%; padding:12px 14px; border:1px solid #d1d5db; border-radius:10px; font-size:16px; }
+    input[type="file"] { width:100%; padding:10px; border:1px dashed #d1d5db; border-radius:10px; background:#fafafa; }
+    button { padding:12px 16px; border-radius:10px; border:0; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .row { display:flex; gap:12px; align-items:center; margin-top:16px; }
+    .error { margin-top:10px; color:#b91c1c; font-weight:600; font-size:14px; }
+    .status { margin-top:10px; color:#374151; font-size:14px; }
+    progress { width:100%; height:14px; margin-top:10px; }
+    .hint { margin-top:16px; color:#6b7280; font-size:14px; }
+    .pill { display:inline-block; background:#f3f4f6; color:#111827; border-radius:999px; padding:4px 10px; font-size:12px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="card">
     <h1>Lovable → cPanel (Slug)</h1>
-    <p class="lead">Envie o ZIP do Lovable e informe a slug. Vamos devolver um <b>site.zip</b> pronto para subir no cPanel.</p>
+    <p class="muted">Envie o ZIP do Lovable e informe a slug. Vamos devolver um <b>site.zip</b> pronto para subir no cPanel.</p>
 
-    <div class="card">
-      <form id="form">
-        <label for="slug">Slug (ex.: bancario)</label>
-        <input id="slug" name="slug" type="text" placeholder="bancario" required />
+    <form id="form">
+      <label for="slug">Slug (ex.: bancario)</label>
+      <input id="slug" type="text" placeholder="minha-slug" />
 
-        <label for="file">ZIP do Lovable</label>
-        <input id="file" name="file" type="file" accept=".zip" required />
+      <label for="file">ZIP do Lovable</label>
+      <input id="file" type="file" accept=".zip" />
 
-        <div class="row">
-          <button id="go" type="submit">Gerar site.zip</button>
-          <span id="phase" class="pill">pronto</span>
-        </div>
+      <div class="row">
+        <button id="go" type="submit">Gerar site.zip</button>
+        <span id="badge" class="pill">aceita até 100 MB</span>
+        <span id="btn-err" class="pill" style="display:none;background:#fee2e2;color:#991b1b;">erro</span>
+      </div>
 
-        <div class="progress-wrap" aria-live="polite">
-          <div class="status">
-            <strong id="statusLabel">Aguardando…</strong>
-            <span>
-              <span id="queueInfo">Fila: —</span> •
-              <span id="percent">0%</span> •
-              <span id="eta">ETL: —</span>
-            </span>
-          </div>
-          <div class="bar"><span id="bar"></span></div>
-          <div class="small" id="detail"></div>
-        </div>
+      <div id="error" class="error"></div>
+      <div id="status" class="status"></div>
+      <progress id="bar" value="0" max="100"></progress>
 
-        <p class="hint">Depois, extraia o <code>site.zip</code> em <code>/public_html/&lt;slug&gt;/</code> no cPanel.</p>
-      </form>
-    </div>
+      <p class="hint">Depois, extraia o <code>site.zip</code> em <code>/public_html/&lt;slug&gt;/</code> no cPanel.</p>
+    </form>
   </div>
 
-  <script>
-    const form = document.getElementById('form');
-    const goBtn = document.getElementById('go');
-    const phaseEl = document.getElementById('phase');
-    const bar = document.getElementById('bar');
-    const percentEl = document.getElementById('percent');
-    const etaEl = document.getElementById('eta');
-    const statusLabel = document.getElementById('statusLabel');
-    const detail = document.getElementById('detail');
-    const queueInfo = document.getElementById('queueInfo');
+<script>
+const slugInput = document.querySelector("#slug");
+const fileInput = document.querySelector("#file");
+const btn = document.querySelector("#go");
+const errPill = document.querySelector("#btn-err");
+const statusEl = document.querySelector("#status");
+const errorEl = document.querySelector("#error");
+const bar = document.querySelector("#bar");
 
-    const setPhase = (t)=>phaseEl.textContent=t;
-    const setStatus=(t)=>statusLabel.textContent=t;
-    const setDetail=(t)=>detail.textContent=t||'';
-    const setPct=(p)=>{bar.style.width=p+'%'; percentEl.textContent=Math.round(p)+'%';};
-    const setQueue=(n)=>{queueInfo.textContent=`Fila: ${n===0?'processando':n}`;};
-    const fmtETA=(s)=> s>90 ? `${Math.round(s/60)} min` : `${Math.round(s)} s`;
+function setError(msg) {
+  errorEl.textContent = msg || "";
+  errPill.style.display = msg ? "inline-block" : "none";
+}
+function setStatus(msg) { statusEl.textContent = msg || ""; }
+function setBusy(v){ btn.disabled = v; }
 
-    function disableUI(disabled){
-      goBtn.disabled=disabled;
-      document.getElementById('slug').disabled=disabled;
-      document.getElementById('file').disabled=disabled;
+async function enqueue() {
+  setBusy(true); setError(""); setStatus("Validando…"); bar.value = 0;
+
+  const slug = (slugInput.value || "").trim();
+  const file = fileInput.files?.[0];
+  if (!slug) { setError("Informe a slug."); setBusy(false); return; }
+  if (!file)  { setError("Selecione o ZIP do Lovable."); setBusy(false); return; }
+
+  const fd = new FormData();
+  fd.append("slug", slug);
+  fd.append("file", file);
+
+  try {
+    const res = await fetch("/tasks", { method:"POST", body: fd });
+
+    if (res.status === 413) {
+      const data = await res.json().catch(()=>({detail:"ZIP muito grande"}));
+      setError(data.detail || "ZIP muito grande (máx. 100 MB).");
+      setBusy(false); return;
+    }
+    if (res.status === 429 || res.status === 503) {
+      const data = await res.json().catch(()=>({detail:"Fila ocupada"}));
+      setError(data.detail || "Fila ocupada. Tente novamente em alguns segundos.");
+      setBusy(false); return;
+    }
+    if (res.status >= 500) {
+      setError("Servidor acordando/instável (código " + res.status + "). Tente de novo em 10–20s.");
+      setBusy(false); return;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(()=>null);
+      setError((data && data.detail) || ("Falha (" + res.status + ")."));
+      setBusy(false); return;
     }
 
-    async function pollStatus(id, slug){
-      let timer=null;
-      const tick=async ()=>{
-        try{
-          const r=await fetch(`/tasks/${id}/status`);
-          if(!r.ok) throw new Error(`HTTP ${r.status}`);
-          const st=await r.json();
-          setQueue(st.position);
-          if(st.status==='queued'){
-            setPhase('aguardando'); setStatus('Aguardando na fila…'); setPct(0);
-            etaEl.textContent='ETL: '+fmtETA(st.eta_seconds||0);
-          }else if(st.status==='running'){
-            setPhase('processando'); setStatus(st.message||'Processando…'); setPct(Math.max(1, st.progress||0));
-            etaEl.textContent='ETL: '+fmtETA(st.eta_seconds||0);
-          }else if(st.status==='done'){
-            clearInterval(timer);
-            setPhase('baixando'); setStatus('Concluído ✓ Baixando…'); setPct(100); etaEl.textContent='ETL: 0 s';
-            const resp=await fetch(`/tasks/${id}/download`);
-            if(!resp.ok) throw new Error('Falha ao baixar');
-            const blob=await resp.blob(); const url=URL.createObjectURL(blob);
-            const a=document.createElement('a'); a.href=url; a.download=`${slug}-site.zip`;
-            document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-            disableUI(false); return;
-          }else if(st.status==='error'){
-            clearInterval(timer); setPhase('erro'); setStatus('Erro'); setDetail('Tente novamente.');
-            disableUI(false); return;
-          }
-        }catch(e){
-          clearInterval(timer); setPhase('erro'); setStatus('Erro ao consultar status'); setDetail(String(e));
-          disableUI(false);
-        }
-      };
-      await tick(); timer=setInterval(tick,1500);
+    const data = await res.json(); // {task_id, queue_position, message}
+    setStatus(`Fila: ${data.message} • 0%`);
+    await poll(data.task_id);
+  } catch (e) {
+    setError("Conexão falhou. Tente novamente.");
+    setBusy(false);
+  }
+}
+
+async function poll(taskId) {
+  let lastPct = 0;
+  while (true) {
+    const res = await fetch("/tasks/" + taskId);
+    if (!res.ok) {
+      setError("Falha ao consultar status (" + res.status + ").");
+      setBusy(false); return;
     }
+    const st = await res.json();
+    const pct = Math.max(0, Math.min(100, st.progress ?? 0));
+    bar.value = pct;
+    const eta = st.eta ? (" • ETL: " + st.eta) : "";
+    setStatus(`Fila: ${st.status} • ${pct}%${eta}`);
 
-    form.addEventListener('submit', async (e)=>{
-      e.preventDefault();
-      const slug=document.getElementById('slug').value.trim();
-      const file=document.getElementById('file').files[0];
-      if(!slug){alert('Informe a slug');return;}
-      if(!file){alert('Selecione o ZIP do Lovable');return;}
-      if(!/^[a-z0-9][a-z0-9/_-]*$/.test(slug)){alert('Slug inválida.');return;}
+    if (st.status === "done" && st.download_url) {
+      setStatus("Concluído • 100%");
+      window.location.href = st.download_url;  // baixa site.zip
+      setBusy(false); return;
+    }
+    if (st.status === "error") {
+      setError(st.message || "Erro ao processar.");
+      setBusy(false); return;
+    }
+    const wait = (pct > lastPct) ? 900 : 1500;
+    lastPct = pct;
+    await new Promise(r => setTimeout(r, wait));
+  }
+}
 
-      disableUI(true);
-      setPhase('enviando'); setStatus('Enfileirando…'); setPct(0); setDetail('Preparando tarefa…'); etaEl.textContent='ETL: —'; setQueue('—');
-
-      const fd=new FormData(); fd.append('slug',slug); fd.append('file',file,file.name);
-      try{
-        const r=await fetch('/tasks',{method:'POST',body:fd});
-        if(!r.ok) throw new Error(`HTTP ${r.status}`);
-        const data=await r.json(); setQueue(data.position ?? '—');
-        setPhase('aguardando'); setStatus('Aguardando na fila…');
-        pollStatus(data.id, slug);
-      }catch(err){
-        setPhase('erro'); setStatus('Erro ao enfileirar'); setDetail(String(err)); disableUI(false);
-      }
-    });
-  </script>
+document.querySelector("#form").addEventListener("submit", (e)=>{
+  e.preventDefault();
+  enqueue();
+});
+</script>
 </body>
 </html>
