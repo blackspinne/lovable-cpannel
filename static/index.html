@@ -23,7 +23,6 @@
     .status{display:flex;justify-content:space-between;font-size:13px;margin:8px 2px 0}
     .status span{color:var(--muted)}
     .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#1e3a8a;font-size:12px;margin-left:8px}
-    .ok{color:var(--ok)} .err{color:var(--err)}
     .small{font-size:12px;color:var(--muted)}
   </style>
 </head>
@@ -58,7 +57,7 @@
           <div class="small" id="detail"></div>
         </div>
 
-        <p class="hint">Dica: depois extraia o <code>site.zip</code> em <code>/public_html/&lt;slug&gt;/</code> no cPanel.</p>
+        <p class="hint">Depois, extraia o <code>site.zip</code> em <code>/public_html/&lt;slug&gt;/</code> no cPanel.</p>
       </form>
     </div>
   </div>
@@ -74,108 +73,74 @@
     const detail = document.getElementById('detail');
     const queueInfo = document.getElementById('queueInfo');
 
-    const setPhase = (txt) => phaseEl.textContent = txt;
-    const setStatus = (txt) => statusLabel.textContent = txt;
-    const setDetail = (txt) => detail.textContent = txt || '';
-    const setPct = (p) => { bar.style.width = p + '%'; percentEl.textContent = Math.round(p) + '%'; };
-    const setQueue = (n) => { queueInfo.textContent = `Fila: ${n === 0 ? 'processando' : n}`; };
-    const fmtETA = (s) => s > 90 ? `${Math.round(s/60)} min` : `${Math.round(s)} s`;
+    const setPhase = (t)=>phaseEl.textContent=t;
+    const setStatus=(t)=>statusLabel.textContent=t;
+    const setDetail=(t)=>detail.textContent=t||'';
+    const setPct=(p)=>{bar.style.width=p+'%'; percentEl.textContent=Math.round(p)+'%';};
+    const setQueue=(n)=>{queueInfo.textContent=`Fila: ${n===0?'processando':n}`;};
+    const fmtETA=(s)=> s>90 ? `${Math.round(s/60)} min` : `${Math.round(s)} s`;
 
-    function disableUI(disabled) {
-      goBtn.disabled = disabled;
-      document.getElementById('slug').disabled = disabled;
-      document.getElementById('file').disabled = disabled;
+    function disableUI(disabled){
+      goBtn.disabled=disabled;
+      document.getElementById('slug').disabled=disabled;
+      document.getElementById('file').disabled=disabled;
     }
 
-    async function pollStatus(id, slug) {
-      setPhase('aguardando');
-      setStatus('Aguardando na fila…');
-      setDetail('');
-
-      let timer = null;
-      const tick = async () => {
-        try {
-          const r = await fetch(`/tasks/${id}/status`);
-          if (!r.ok) throw new Error('Erro no status');
-          const st = await r.json(); // {status, position, progress, message, eta_seconds}
-
-          // posição na fila (0 = processando)
+    async function pollStatus(id, slug){
+      let timer=null;
+      const tick=async ()=>{
+        try{
+          const r=await fetch(`/tasks/${id}/status`);
+          if(!r.ok) throw new Error(`HTTP ${r.status}`);
+          const st=await r.json();
           setQueue(st.position);
-
-          if (st.status === 'queued') {
-            setPhase('aguardando');
-            setStatus('Aguardando na fila…');
-            setPct(0);
-            etaEl.textContent = 'ETL: ' + fmtETA(st.eta_seconds || 0);
-          }
-          else if (st.status === 'running') {
-            setPhase('processando');
-            setStatus(st.message || 'Processando…');
-            setPct(Math.max(1, st.progress || 0));
-            etaEl.textContent = 'ETL: ' + fmtETA(st.eta_seconds || 0);
-          }
-          else if (st.status === 'done') {
-            setPhase('baixando');
-            setStatus('Concluído ✓ Baixando…');
-            setPct(100); etaEl.textContent = 'ETL: 0 s';
+          if(st.status==='queued'){
+            setPhase('aguardando'); setStatus('Aguardando na fila…'); setPct(0);
+            etaEl.textContent='ETL: '+fmtETA(st.eta_seconds||0);
+          }else if(st.status==='running'){
+            setPhase('processando'); setStatus(st.message||'Processando…'); setPct(Math.max(1, st.progress||0));
+            etaEl.textContent='ETL: '+fmtETA(st.eta_seconds||0);
+          }else if(st.status==='done'){
             clearInterval(timer);
-
-            // baixa o zip
-            const resp = await fetch(`/tasks/${id}/download`);
-            if (!resp.ok) throw new Error('Falha ao baixar');
-            const blob = await resp.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = `${slug}-site.zip`;
-            document.body.appendChild(a); a.click(); a.remove();
-            URL.revokeObjectURL(url);
-
-            disableUI(false);
-            return;
+            setPhase('baixando'); setStatus('Concluído ✓ Baixando…'); setPct(100); etaEl.textContent='ETL: 0 s';
+            const resp=await fetch(`/tasks/${id}/download`);
+            if(!resp.ok) throw new Error('Falha ao baixar');
+            const blob=await resp.blob(); const url=URL.createObjectURL(blob);
+            const a=document.createElement('a'); a.href=url; a.download=`${slug}-site.zip`;
+            document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+            disableUI(false); return;
+          }else if(st.status==='error'){
+            clearInterval(timer); setPhase('erro'); setStatus('Erro'); setDetail('Tente novamente.');
+            disableUI(false); return;
           }
-          else if (st.status === 'error') {
-            clearInterval(timer);
-            setPhase('erro'); setStatus('Erro'); setDetail('Tente novamente. Se persistir, fale comigo.');
-            disableUI(false);
-            return;
-          }
-        } catch (e) {
-          clearInterval(timer);
-          setPhase('erro'); setStatus('Erro ao consultar status'); setDetail(String(e));
+        }catch(e){
+          clearInterval(timer); setPhase('erro'); setStatus('Erro ao consultar status'); setDetail(String(e));
           disableUI(false);
         }
       };
-
-      await tick();
-      timer = setInterval(tick, 1500);
+      await tick(); timer=setInterval(tick,1500);
     }
 
-    form.addEventListener('submit', async (e) => {
+    form.addEventListener('submit', async (e)=>{
       e.preventDefault();
-
-      const slug = document.getElementById('slug').value.trim();
-      const file = document.getElementById('file').files[0];
-      if (!slug) { alert('Informe a slug'); return; }
-      if (!file) { alert('Selecione o ZIP do Lovable'); return; }
-      if (!/^[a-z0-9][a-z0-9/_-]*$/.test(slug)) { alert('Slug inválida.'); return; }
+      const slug=document.getElementById('slug').value.trim();
+      const file=document.getElementById('file').files[0];
+      if(!slug){alert('Informe a slug');return;}
+      if(!file){alert('Selecione o ZIP do Lovable');return;}
+      if(!/^[a-z0-9][a-z0-9/_-]*$/.test(slug)){alert('Slug inválida.');return;}
 
       disableUI(true);
-      setPhase('enviando'); setStatus('Enfileirando…'); setPct(0); setDetail('Preparando tarefa…'); etaEl.textContent = 'ETL: —'; setQueue('—');
+      setPhase('enviando'); setStatus('Enfileirando…'); setPct(0); setDetail('Preparando tarefa…'); etaEl.textContent='ETL: —'; setQueue('—');
 
-      const fd = new FormData();
-      fd.append('slug', slug);
-      fd.append('file', file, file.name);
-
-      try {
-        const r = await fetch('/tasks', { method: 'POST', body: fd });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const data = await r.json(); // {id, position, eta_seconds}
-        setQueue(data.position ?? '—');
+      const fd=new FormData(); fd.append('slug',slug); fd.append('file',file,file.name);
+      try{
+        const r=await fetch('/tasks',{method:'POST',body:fd});
+        if(!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data=await r.json(); setQueue(data.position ?? '—');
         setPhase('aguardando'); setStatus('Aguardando na fila…');
         pollStatus(data.id, slug);
-      } catch (err) {
-        setPhase('erro'); setStatus('Erro ao enfileirar'); setDetail(String(err));
-        disableUI(false);
+      }catch(err){
+        setPhase('erro'); setStatus('Erro ao enfileirar'); setDetail(String(err)); disableUI(false);
       }
     });
   </script>
