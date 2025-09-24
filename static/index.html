@@ -24,8 +24,8 @@
     .status{margin-top:10px;font-size:14px}
     .status .err{color:var(--err)}
     .status .ok{color:var(--ok)}
-    .bar{height:8px;background:#0f172a;border-radius:99px;overflow:hidden;margin-top:10px}
-    .bar > b{display:block;height:100%;width:0;background:linear-gradient(90deg,#2563eb,#22d3ee);transition:width .2s}
+    .bar{height:8px;background:#0f172a;border-radius:99px;overflow:hidden;margin-top:8px}
+    .bar > b{display:block;height:100%;width:0;background:linear-gradient(90deg,#2563eb,#22d3ee);transition:width .25s}
     a.dl{color:#93c5fd;text-decoration:none;font-weight:600}
     code{background:#0b1220;border:1px solid #1f2a44;padding:2px 6px;border-radius:6px}
   </style>
@@ -51,6 +51,11 @@
       </div>
 
       <div class="status" id="status"></div>
+
+      <div style="margin-top:10px;color:#cbd5e1;font-size:14px">Upload</div>
+      <div class="bar"><b id="barUp"></b></div>
+
+      <div style="margin-top:10px;color:#cbd5e1;font-size:14px">Processamento</div>
       <div class="bar"><b id="bar"></b></div>
 
       <p class="muted" style="margin-top:16px">
@@ -65,9 +70,9 @@ const file = document.getElementById('file');
 const slug = document.getElementById('slug');
 const stat = document.getElementById('status');
 const bar  = document.getElementById('bar');
+const barUp= document.getElementById('barUp');
 const chip = document.getElementById('chip');
 
-function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function setErr(msg){
   chip.style.display='inline-block';
   chip.textContent='erro';
@@ -75,45 +80,43 @@ function setErr(msg){
 }
 function setInfo(msg){ stat.textContent = msg || ''; }
 function setBar(p){ bar.style.width = (Math.max(0, Math.min(100, p)) || 0) + '%'; }
+function setBarUp(p){ barUp.style.width = (Math.max(0, Math.min(100, p)) || 0) + '%'; }
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 async function poll(taskId){
-  try{
-    const r = await fetch(`/tasks/${taskId}`);
-    if(!r.ok){ setErr(`HTTP ${r.status}`); return; }
-    const t = await r.json();
+  const r = await fetch(`/tasks/${taskId}`);
+  if(!r.ok){ setErr(`HTTP ${r.status}`); return; }
+  const t = await r.json();
 
-    let line = `Status: ${t.state}`;
-    if (typeof t.progress === 'number') line += ` • ${t.progress}%`;
-    if (t.eta_seconds != null) line += ` • ETA: ~${Math.max(0, t.eta_seconds)}s`;
-    if (t.message) line += ` • ${t.message}`;
-    setInfo(line);
-    setBar(t.progress || 0);
+  let line = `Fila: ${t.state}`;
+  if (typeof t.progress === 'number') line += ` • ${t.progress}%`;
+  if (t.eta_seconds != null) line += ` • ETA: ~${Math.max(0, t.eta_seconds)}s`;
+  if (t.message) line += ` • ${t.message}`;
+  setInfo(line);
+  setBar(t.progress || 0);
 
-    if (t.state === 'error'){ setErr(t.message||'Falha'); return; }
-    if (t.state === 'done'){
-      chip.style.display='none';
-      const url = t.download_url || `/download/${taskId}`;
-      stat.innerHTML = `<span class="ok">Pronto!</span> <a class="dl" href="${url}">Baixar site.zip</a>`;
-      setBar(100);
-      return;
-    }
-    setTimeout(()=>poll(taskId), 1200);
-  }catch(e){
-    setErr(e.message||e);
+  if (t.state === 'error'){ setErr(t.message||'Falha'); return; }
+  if (t.state === 'done'){
+    chip.style.display='none';
+    const url = t.download_url || `/download/${taskId}`;
+    stat.innerHTML = `<span class="ok">Pronto!</span> <a class="dl" href="${url}">Baixar site.zip</a>`;
+    setBar(100);
+    return;
   }
+  setTimeout(()=>poll(taskId), 1200);
 }
 
-// Upload com progresso usando XHR para mostrar a barra desde o início
 go.onclick = async () => {
   chip.style.display='none';
   stat.textContent = '';
-  setBar(0);
+  setBar(0); setBarUp(0);
 
   const f = file.files[0];
   const s = (slug.value||'').trim();
   if(!s){ setErr('Informe a slug.'); return; }
   if(!f){ setErr('Envie o arquivo .zip do Lovable.'); return; }
 
+  // FormData para enviar slug + arquivo
   const fd = new FormData();
   fd.append('slug', s);
   fd.append('file', f);
@@ -121,39 +124,32 @@ go.onclick = async () => {
   go.disabled = true;
 
   try{
-    // XHR para acompanhar upload
+    // usamos XHR pra mostrar progresso de upload
     const xhr = new XMLHttpRequest();
-    const uploadPromise = new Promise((resolve, reject) => {
+    const taskId = await new Promise((resolve, reject) => {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setBarUp((e.loaded / e.total) * 100);
+      };
       xhr.onreadystatechange = () => {
         if (xhr.readyState === 4) {
-          if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.responseText);
-          else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const j = JSON.parse(xhr.responseText);
+              resolve(j.task_id);
+            } catch (err) {
+              reject(err);
+            }
+          } else {
+            reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+          }
         }
       };
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.min(15, Math.round((e.loaded / e.total) * 15)); // até 15% no upload
-          setInfo(`Enviando arquivo... ${pct}%`);
-          setBar(pct);
-        } else {
-          setInfo('Enviando arquivo...');
-          setBar(10);
-        }
-      };
-      xhr.onerror = () => reject(new Error('Falha ao enviar arquivo.'));
+      xhr.open('POST', '/tasks', true);
+      xhr.send(fd);
     });
 
-    xhr.open('POST', '/tasks', true);
-    xhr.send(fd);
-
-    const txt = await uploadPromise;
-    let data = {};
-    try { data = JSON.parse(txt); } catch {}
-    if (!data.task_id) throw new Error('Resposta inválida do servidor.');
-
     setInfo('Enfileirado. Aguardando processamento...');
-    setBar(20);
-    poll(data.task_id);
+    poll(taskId);
 
   }catch(e){
     setErr(e.message||e);
