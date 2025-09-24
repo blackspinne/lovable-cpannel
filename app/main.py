@@ -1,5 +1,4 @@
 import os
-import io
 import re
 import uuid
 import json
@@ -37,6 +36,7 @@ TASKS: Dict[str, Task] = {}
 QUEUE: "asyncio.Queue[str]" = asyncio.Queue()
 WORKER_RUNNING = False
 
+# ---------- app ----------
 app = FastAPI()
 app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
 
@@ -44,12 +44,14 @@ app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
 def root():
     return RedirectResponse("/ui/")
 
-@app.get("/healthz")
+@app.get("/healthz", response_class=PlainTextResponse)
 def healthz():
-    return PlainTextResponse("ok")
+    # usado pelo Render para readiness
+    return "ok"
 
 # ---------- utils ----------
 import json as _json
+
 def read_json(p: Path) -> dict:
     try:
         return _json.loads(p.read_text(encoding="utf-8"))
@@ -67,14 +69,14 @@ def has_dep(pkg: str, pkgjson: dict) -> bool:
     return False
 
 def find_project_root(base: Path) -> Path:
-    # escolhe o package.json "mais provável"
     cands = [p.parent for p in base.rglob("package.json") if "node_modules" not in p.parts]
     if not cands:
         raise FileNotFoundError("Não encontrei package.json no ZIP enviado.")
     def score(d: Path):
         s = 0
-        if any((d/f).exists() for f in ["vite.config.ts","vite.config.js","next.config.js","next.config.mjs"]): s += 10
-        s -= len(d.parts)  # diretório mais raso ganha
+        if any((d/f).exists() for f in ["vite.config.ts","vite.config.js","next.config.js","next.config.mjs"]):
+            s += 10
+        s -= len(d.parts)
         return s
     cands.sort(key=score, reverse=True)
     return cands[0]
@@ -128,7 +130,6 @@ def ensure_vite_config(project_root: Path, slug: str):
     return patch_file_text(p, transform)
 
 def patch_next(project_root: Path, slug: str):
-    # injeta basePath/assetPrefix e ajusta script export
     for fname in ("next.config.js","next.config.mjs"):
         p = project_root / fname
         if p.exists():
@@ -141,6 +142,7 @@ def patch_next(project_root: Path, slug: str):
                 t1 = re.sub(r'(export\s+default\s*\{)', r'\1\n  basePath: "/%s",\n  assetPrefix: "/%s/",' % (slug, slug), t1, count=1)
                 return t1
             patch_file_text(p, t)
+            # garante export estável
             pkg_path = project_root / "package.json"
             pkg = read_json(pkg_path)
             scripts = pkg.get("scripts", {})
@@ -160,7 +162,6 @@ def patch_cra_homepage(project_root: Path, slug: str):
     return False
 
 def ensure_hashrouter(src_dir: Path):
-    # garante HashRouter para SPAs
     for name in ["main.tsx","main.jsx","index.tsx","index.jsx","main.ts","main.js","index.ts","index.js"]:
         p = src_dir / name
         if p.exists():
@@ -179,7 +180,6 @@ def ensure_hashrouter(src_dir: Path):
     return False
 
 def write_htaccess(target_dir: Path, slug: str):
-    # regras simples (compatível com LiteSpeed/Apache)
     rules = (
         "DirectoryIndex index.html\n"
         "RewriteEngine On\n"
@@ -195,22 +195,21 @@ def run_cmd(cmd, cwd: Path):
     subprocess.check_call(cmd, cwd=str(cwd))
 
 def npm_build(project_root: Path, framework: str) -> Path:
-    npm = "npm"
-    # install
+    # instala deps
     if (project_root / "package-lock.json").exists():
         try:
-            run_cmd([npm, "ci"], project_root)
+            run_cmd(["npm", "ci"], project_root)
         except subprocess.CalledProcessError:
-            run_cmd([npm, "install"], project_root)
+            run_cmd(["npm", "install"], project_root)
     else:
-        run_cmd([npm, "install"], project_root)
+        run_cmd(["npm", "install"], project_root)
 
     # build/export
     if framework == "next":
-        run_cmd([npm, "run", "export"], project_root)
+        run_cmd(["npm", "run", "export"], project_root)
         out = project_root / "dist"
     else:
-        run_cmd([npm, "run", "build"], project_root)
+        run_cmd(["npm", "run", "build"], project_root)
         out = None
         for cand in ["dist","build","out"]:
             if (project_root / cand).exists():
@@ -218,20 +217,10 @@ def npm_build(project_root: Path, framework: str) -> Path:
                 break
         if out is None:
             raise RuntimeError("Build não gerou pasta dist/build/out.")
-    # sanity: precisa ter index.html na raiz do output
-    if not (out / "index.html").exists():
-        # alguns templates geram subpasta; se tiver uma única pasta com index.html dentro, usa ela
-        subs = [d for d in out.iterdir() if d.is_dir()]
-        for d in subs:
-            if (d / "index.html").exists():
-                out = d
-                break
-    if not (out / "index.html").exists():
-        raise RuntimeError("index.html não encontrado após o build.")
     return out
 
 def sanity_html_css(dist_dir: Path):
-    # torna URLs absolutas em relativas (sem barra inicial)
+    # Corrige URLs absolutas que quebram sob subcaminho
     for htmlp in dist_dir.rglob("*.html"):
         s = htmlp.read_text(encoding="utf-8", errors="ignore")
         def repl_attr(m):
@@ -243,25 +232,26 @@ def sanity_html_css(dist_dir: Path):
         s2 = re.sub(r'(src|href)\s*=\s*(\')([^\']+)(\')', repl_attr, s2, flags=re.I)
         if s2 != s:
             htmlp.write_text(s2, encoding="utf-8")
-
     for cssp in dist_dir.rglob("*.css"):
         s = cssp.read_text(encoding="utf-8", errors="ignore")
         def repl_url(m):
             inner = m.group(1).strip().strip('"').strip("'")
             if inner and not re.match(r'^(https?:)?//|data:', inner) and inner.startswith("/"):
                 inner = inner.lstrip("/")
-            if '"' in m.group(1): return f'url("{inner}")'
-            if "'" in m.group(1): return f"url('{inner}')"
+            if '"' in m.group(1):
+                return f'url("{inner}")'
+            if "'" in m.group(1):
+                return f"url('{inner}')"
             return f'url({inner})'
         s2 = re.sub(r'url\(([^)]+)\)', repl_url, s, flags=re.I)
         if s2 != s:
             cssp.write_text(s2, encoding="utf-8")
 
 def zip_with_perms(src_dir: Path, out_zip: Path):
-    # zipa o CONTEÚDO da pasta src_dir, sem adicionar uma pasta-pai
+    # Zip com arquivos na RAIZ (index.html na raiz da slug)
     out_zip.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        # diretórios
+        # pastas
         for d in sorted([p for p in src_dir.rglob("*") if p.is_dir()]):
             rel = d.relative_to(src_dir).as_posix().rstrip("/") + "/"
             zi = zipfile.ZipInfo(rel)
@@ -284,7 +274,6 @@ def convert_lovable_zip(input_zip: Path, slug: str, work_dir: Path) -> Path:
     project_root = find_project_root(src_dir)
     fw = detect_framework(project_root)
 
-    # patchs de base path
     if fw == "vite":
         ensure_vite_config(project_root, slug)
     elif fw == "next":
@@ -292,7 +281,7 @@ def convert_lovable_zip(input_zip: Path, slug: str, work_dir: Path) -> Path:
     elif fw == "cra":
         patch_cra_homepage(project_root, slug)
 
-    # HashRouter (quando existir src/)
+    # HashRouter para SPA
     for cand in ["src","app","frontend/src"]:
         p = project_root / cand
         if p.exists():
@@ -300,10 +289,10 @@ def convert_lovable_zip(input_zip: Path, slug: str, work_dir: Path) -> Path:
             break
 
     dist_dir = npm_build(project_root, fw)
+
     sanity_html_css(dist_dir)
     write_htaccess(dist_dir, slug)
 
-    # zip final
     out_zip = work_dir / "site.zip"
     zip_with_perms(dist_dir, out_zip)
     return out_zip
@@ -321,21 +310,23 @@ async def worker_loop():
                 continue
             job_dir = JOBS_ROOT / task_id
             input_zip = job_dir / "input.zip"
-            out_zip  = job_dir / "site.zip"
+            out_zip = job_dir / "site.zip"
             try:
-                task.state = "working"; task.progress = 10; task.message = "Validando e preparando projeto..."
+                task.state = "working"; task.progress = 10; task.message = "Validando e preparando..."
                 with tempfile.TemporaryDirectory(dir=job_dir) as tmp:
                     tmp_path = Path(tmp)
                     task.progress = 35; task.message = "Aplicando ajustes (slug/roteamento)..."
                     result_zip = convert_lovable_zip(input_zip, task.slug, tmp_path)
-                    task.progress = 85; task.message = "Empacotando site.zip..."
+                    task.progress = 85; task.message  = "Gerando site.zip..."
                     out_zip.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(result_zip), str(out_zip))
                 task.progress = 100; task.state = "done"
                 task.message = f"Pronto! ({int(out_zip.stat().st_size/1024)} KB)"
                 task.download_url = f"/download/{task_id}"; task.eta_seconds = 0
             except subprocess.CalledProcessError as e:
-                task.state = "error"; task.message = f"Falha no build (npm). Saída: {e}"; task.progress = 100
+                task.state = "error"; task.message = f"Falha no build (npm): {e}"; task.progress = 100
+            except FileNotFoundError as e:
+                task.state = "error"; task.message = f"FileNotFoundError: {e}"; task.progress = 100
             except Exception as e:
                 task.state = "error"; task.message = f"{type(e).__name__}: {e}"; task.progress = 100
             QUEUE.task_done()
@@ -349,21 +340,27 @@ async def _startup():
 # ---------- API ----------
 @app.post("/tasks")
 async def enqueue(slug: str = Form(...), file: UploadFile = File(...)):
-    # salva upload (streaming) e valida tamanho
     task_id = str(uuid.uuid4())
     job_dir = JOBS_ROOT / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
     input_zip = job_dir / "input.zip"
+
+    # salva upload
     total = 0
     with open(input_zip, "wb") as f:
         while True:
             chunk = await file.read(1024 * 1024)
-            if not chunk: break
-            total += len(chunk); f.write(chunk)
-            if total > MAX_UPLOAD_MB * 1024 * 1024:
-                try: input_zip.unlink()
-                finally: ...
-                raise HTTPException(413, f"Arquivo maior que {MAX_UPLOAD_MB} MB")
+            if not chunk:
+                break
+            total += len(chunk)
+            f.write(chunk)
+
+    if total > MAX_UPLOAD_MB * 1024 * 1024:
+        try:
+            input_zip.unlink()
+        finally:
+            pass
+        raise HTTPException(413, f"Arquivo maior que {MAX_UPLOAD_MB} MB")
 
     task = Task(id=task_id, slug=slug.strip(), state="queued", progress=0, eta_seconds=None)
     TASKS[task_id] = task
@@ -375,7 +372,6 @@ async def status(task_id: str):
     task = TASKS.get(task_id)
     if not task:
         raise HTTPException(404, "Task não encontrada")
-    # ETA simples: 1min por item na fila; enquanto working, ~1.2s por % restante
     if task.state == "queued":
         try:
             position = max(0, QUEUE.qsize() - 1)
@@ -393,7 +389,3 @@ async def download(task_id: str):
     if not out_zip.exists():
         raise HTTPException(404, "site.zip não encontrado (o job terminou com erro ou foi limpo).")
     return FileResponse(path=str(out_zip), media_type="application/zip", filename="site.zip")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=PORT)
