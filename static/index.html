@@ -24,8 +24,8 @@
     .status{margin-top:10px;font-size:14px}
     .status .err{color:var(--err)}
     .status .ok{color:var(--ok)}
-    .bar{height:8px;background:#0f172a;border-radius:99px;overflow:hidden;margin-top:8px}
-    .bar > b{display:block;height:100%;width:0;background:linear-gradient(90deg,#2563eb,#22d3ee);transition:width .25s}
+    .bar{height:8px;background:#0f172a;border-radius:99px;overflow:hidden;margin-top:10px}
+    .bar > b{display:block;height:100%;width:0;background:linear-gradient(90deg,#2563eb,#22d3ee);transition:width .2s}
     a.dl{color:#93c5fd;text-decoration:none;font-weight:600}
     code{background:#0b1220;border:1px solid #1f2a44;padding:2px 6px;border-radius:6px}
   </style>
@@ -67,6 +67,7 @@ const stat = document.getElementById('status');
 const bar  = document.getElementById('bar');
 const chip = document.getElementById('chip');
 
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function setErr(msg){
   chip.style.display='inline-block';
   chip.textContent='erro';
@@ -74,11 +75,10 @@ function setErr(msg){
 }
 function setInfo(msg){ stat.textContent = msg || ''; }
 function setBar(p){ bar.style.width = (Math.max(0, Math.min(100, p)) || 0) + '%'; }
-function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 async function poll(taskId){
   try{
-    const r = await fetch(`/tasks/${taskId}`, { cache: 'no-store' });
+    const r = await fetch(`/tasks/${taskId}`);
     if(!r.ok){ setErr(`HTTP ${r.status}`); return; }
     const t = await r.json();
 
@@ -103,36 +103,7 @@ async function poll(taskId){
   }
 }
 
-function uploadWithProgress(fd){
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/tasks');
-
-    // progresso do upload (0–30%)
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 30);
-        setInfo(`Enviando... ${pct}%`);
-        setBar(pct);
-      } else {
-        setInfo('Enviando...');
-        setBar(15);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try { resolve(JSON.parse(xhr.responseText)); }
-        catch(err){ reject(err); }
-      } else {
-        reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error('Falha de rede no upload'));
-    xhr.send(fd);
-  });
-}
-
+// Upload com progresso usando XHR para mostrar a barra desde o início
 go.onclick = async () => {
   chip.style.display='none';
   stat.textContent = '';
@@ -148,10 +119,42 @@ go.onclick = async () => {
   fd.append('file', f);
 
   go.disabled = true;
+
   try{
-    const { task_id } = await uploadWithProgress(fd);  // 0→30%
+    // XHR para acompanhar upload
+    const xhr = new XMLHttpRequest();
+    const uploadPromise = new Promise((resolve, reject) => {
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.responseText);
+          else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`));
+        }
+      };
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.min(15, Math.round((e.loaded / e.total) * 15)); // até 15% no upload
+          setInfo(`Enviando arquivo... ${pct}%`);
+          setBar(pct);
+        } else {
+          setInfo('Enviando arquivo...');
+          setBar(10);
+        }
+      };
+      xhr.onerror = () => reject(new Error('Falha ao enviar arquivo.'));
+    });
+
+    xhr.open('POST', '/tasks', true);
+    xhr.send(fd);
+
+    const txt = await uploadPromise;
+    let data = {};
+    try { data = JSON.parse(txt); } catch {}
+    if (!data.task_id) throw new Error('Resposta inválida do servidor.');
+
     setInfo('Enfileirado. Aguardando processamento...');
-    poll(task_id);                                     // 30→100%
+    setBar(20);
+    poll(data.task_id);
+
   }catch(e){
     setErr(e.message||e);
   }finally{
